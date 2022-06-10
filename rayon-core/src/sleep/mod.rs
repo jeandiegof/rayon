@@ -86,11 +86,6 @@ impl Sleep {
     ) {
         if idle_state.steal_attempts < MAX_STEAL_ATTEMPTS {
             idle_state.steal_attempts += 1;
-<<<<<<< Updated upstream
-            for _ in 0..idle_state.waiting_time {}
-            idle_state.waiting_time = idle_state.waiting_time * WAITING_TIME_MULTIPLIER;
-        } else {
-=======
             let span = tracing::span!(tracing::Level::TRACE, "busy");
             let _guard = span.enter();
             for _ in 0..idle_state.waiting_time {
@@ -101,7 +96,6 @@ impl Sleep {
         } else {
             let span = tracing::span!(tracing::Level::TRACE, "sleep");
             let _guard = span.enter();
->>>>>>> Stashed changes
             self.sleep(idle_state, latch, has_injected_jobs);
         }
     }
