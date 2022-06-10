@@ -44,8 +44,8 @@ pub(super) struct IdleState {
     waiting_time: u64,
 }
 
-const MAX_STEAL_ATTEMPTS: u32 = 32;
-const INITIAL_WAITING_TIME: u64 = 1000;
+const MAX_STEAL_ATTEMPTS: u32 = 16;
+const INITIAL_WAITING_TIME: u64 = 40;
 const WAITING_TIME_MULTIPLIER: u64 = 2;
 const SLEEP_DURATION: Duration = Duration::from_millis(10);
 
@@ -86,9 +86,22 @@ impl Sleep {
     ) {
         if idle_state.steal_attempts < MAX_STEAL_ATTEMPTS {
             idle_state.steal_attempts += 1;
+<<<<<<< Updated upstream
             for _ in 0..idle_state.waiting_time {}
             idle_state.waiting_time = idle_state.waiting_time * WAITING_TIME_MULTIPLIER;
         } else {
+=======
+            let span = tracing::span!(tracing::Level::TRACE, "busy");
+            let _guard = span.enter();
+            for _ in 0..idle_state.waiting_time {
+                // without this, the loop is optimized away by the compiler
+                unsafe { std::arch::asm!("nop") }
+            }
+            idle_state.waiting_time = idle_state.waiting_time * WAITING_TIME_MULTIPLIER;
+        } else {
+            let span = tracing::span!(tracing::Level::TRACE, "sleep");
+            let _guard = span.enter();
+>>>>>>> Stashed changes
             self.sleep(idle_state, latch, has_injected_jobs);
         }
     }
