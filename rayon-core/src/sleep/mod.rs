@@ -4,6 +4,7 @@
 use crate::latch::CoreLatch;
 use crate::log::Event::*;
 use crate::log::Logger;
+use lazy_static::lazy_static;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -47,7 +48,15 @@ pub(super) struct IdleState {
 
 const INITIAL_WAITING_CYCLES: u64 = 40;
 const WAITING_TIME_MULTIPLIER: u64 = 2;
-const SLEEPING_THRESHOLD: Duration = Duration::from_millis(10);
+
+lazy_static! {
+    static ref SLEEPING_THRESHOLD: Duration = Duration::from_micros(
+        std::env::var("SLEEPING_THRESHOLD_US")
+            .unwrap()
+            .parse()
+            .unwrap(),
+    );
+}
 
 impl Sleep {
     pub(super) fn new(logger: Logger, n_threads: usize) -> Sleep {
@@ -79,7 +88,7 @@ impl Sleep {
         latch: &CoreLatch,
         has_injected_jobs: impl FnOnce() -> bool,
     ) {
-        if idle_state.last_waited_duration < SLEEPING_THRESHOLD {
+        if idle_state.last_waited_duration < *SLEEPING_THRESHOLD {
             let start = Instant::now();
 
             for _ in 0..idle_state.waiting_cycles {
@@ -100,6 +109,6 @@ impl Sleep {
         _latch: &CoreLatch,
         _has_inject_jobs: impl FnOnce() -> bool,
     ) {
-        thread::sleep(SLEEPING_THRESHOLD);
+        thread::sleep(*SLEEPING_THRESHOLD);
     }
 }
