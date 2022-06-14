@@ -6,6 +6,7 @@ use crate::log::Event::*;
 use crate::log::Logger;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 use std::usize;
 
 /// Number of bits used for the thread counters.
@@ -37,17 +38,16 @@ pub(super) struct IdleState {
     /// What is worker index of the idle thread?
     worker_index: usize,
 
-    /// Steal attempts
-    steal_attempts: u32,
+    /// Waiting cycles
+    waiting_cycles: u64,
 
-    /// Waiting time
-    waiting_time: u64,
+    /// Last waited duration
+    last_waited_duration: Duration,
 }
 
-const MAX_STEAL_ATTEMPTS: u32 = 16;
-const INITIAL_WAITING_TIME: u64 = 40;
+const INITIAL_WAITING_CYCLES: u64 = 40;
 const WAITING_TIME_MULTIPLIER: u64 = 2;
-const SLEEP_DURATION: Duration = Duration::from_millis(10);
+const SLEEPING_THRESHOLD: Duration = Duration::from_millis(10);
 
 impl Sleep {
     pub(super) fn new(logger: Logger, n_threads: usize) -> Sleep {
@@ -64,18 +64,13 @@ impl Sleep {
 
         IdleState {
             worker_index,
-            steal_attempts: 0,
-            waiting_time: INITIAL_WAITING_TIME,
+            waiting_cycles: INITIAL_WAITING_CYCLES,
+            last_waited_duration: Duration::from_secs(0),
         }
     }
 
     #[inline]
-    pub(super) fn work_found(&self, idle_state: IdleState) {
-        self.logger.log(|| ThreadFoundWork {
-            worker: idle_state.worker_index,
-            yields: idle_state.steal_attempts,
-        });
-    }
+    pub(super) fn work_found(&self, idle_state: IdleState) {}
 
     #[inline]
     pub(super) fn no_work_found(
@@ -84,18 +79,16 @@ impl Sleep {
         latch: &CoreLatch,
         has_injected_jobs: impl FnOnce() -> bool,
     ) {
-        if idle_state.steal_attempts < MAX_STEAL_ATTEMPTS {
-            idle_state.steal_attempts += 1;
-            let span = tracing::span!(tracing::Level::TRACE, "busy");
-            let _guard = span.enter();
-            for _ in 0..idle_state.waiting_time {
-                // without this, the loop is optimized away by the compiler
+        if idle_state.last_waited_duration < SLEEPING_THRESHOLD {
+            let start = Instant::now();
+
+            for _ in 0..idle_state.waiting_cycles {
                 unsafe { std::arch::asm!("nop") }
             }
-            idle_state.waiting_time = idle_state.waiting_time * WAITING_TIME_MULTIPLIER;
+
+            idle_state.last_waited_duration = start.elapsed();
+            idle_state.waiting_cycles = idle_state.waiting_cycles * WAITING_TIME_MULTIPLIER;
         } else {
-            let span = tracing::span!(tracing::Level::TRACE, "sleep");
-            let _guard = span.enter();
             self.sleep(idle_state, latch, has_injected_jobs);
         }
     }
@@ -107,6 +100,6 @@ impl Sleep {
         _latch: &CoreLatch,
         _has_inject_jobs: impl FnOnce() -> bool,
     ) {
-        thread::sleep(SLEEP_DURATION);
+        thread::sleep(SLEEPING_THRESHOLD);
     }
 }
