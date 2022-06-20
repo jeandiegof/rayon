@@ -5,6 +5,7 @@ use crate::latch::CoreLatch;
 use crate::log::Event::*;
 use crate::log::Logger;
 use lazy_static::lazy_static;
+use std::sync::atomic::AtomicUsize;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -28,6 +29,8 @@ pub(crate) const THREADS_MAX: usize = (1 << THREADS_BITS) - 1;
 /// [`README.md`] README.md
 pub(super) struct Sleep {
     logger: Logger,
+
+    jobs_counter: AtomicUsize,
 }
 
 /// An instance of this struct is created when a thread becomes idle.
