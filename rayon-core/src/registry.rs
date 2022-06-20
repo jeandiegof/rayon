@@ -396,11 +396,11 @@ impl Registry {
             "inject() sees state.terminate as true"
         );
 
-        let queue_was_empty = self.injected_jobs.is_empty();
-
         for &job_ref in injected_jobs {
             self.injected_jobs.push(job_ref);
         }
+
+        self.sleep.new_jobs(injected_jobs.len());
     }
 
     fn has_injected_job(&self) -> bool {
@@ -654,8 +654,8 @@ impl WorkerThread {
     #[inline]
     pub(super) unsafe fn push(&self, job: JobRef) {
         self.log(|| JobPushed { worker: self.index });
-        let queue_was_empty = self.worker.is_empty();
         self.worker.push(job);
+        self.registry.sleep.new_jobs(1);
     }
 
     #[inline]

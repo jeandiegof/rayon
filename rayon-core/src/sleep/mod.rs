@@ -5,7 +5,7 @@ use crate::latch::CoreLatch;
 use crate::log::Event::*;
 use crate::log::Logger;
 use lazy_static::lazy_static;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -64,7 +64,11 @@ lazy_static! {
 impl Sleep {
     pub(super) fn new(logger: Logger, n_threads: usize) -> Sleep {
         assert!(n_threads <= THREADS_MAX);
-        Sleep { logger }
+
+        Sleep {
+            logger,
+            jobs_counter: AtomicUsize::new(0),
+        }
     }
 
     #[inline]
@@ -113,5 +117,10 @@ impl Sleep {
         _has_inject_jobs: impl FnOnce() -> bool,
     ) {
         thread::sleep(*SLEEPING_THRESHOLD);
+    }
+
+    #[inline]
+    pub(super) fn new_jobs(&self, num_jobs: usize) {
+        self.jobs_counter.fetch_add(num_jobs, Ordering::SeqCst);
     }
 }
