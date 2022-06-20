@@ -45,6 +45,9 @@ pub(super) struct IdleState {
     /// Waiting cycles
     waiting_cycles: u64,
 
+    /// Jobs counter value when we entered the Idle state.
+    jobs_counter: usize,
+
     /// Last waited duration
     last_waited_duration: Duration,
 }
@@ -80,6 +83,7 @@ impl Sleep {
 
         IdleState {
             worker_index,
+            jobs_counter: self.jobs_counter.load(Ordering::SeqCst),
             waiting_cycles: INITIAL_WAITING_CYCLES,
             last_waited_duration: Duration::from_secs(0),
         }
@@ -105,7 +109,13 @@ impl Sleep {
             idle_state.last_waited_duration = start.elapsed();
             idle_state.waiting_cycles = idle_state.waiting_cycles * WAITING_TIME_MULTIPLIER;
         } else {
-            self.sleep(idle_state, latch, has_injected_jobs);
+            let jobs_counter_now = self.jobs_counter.load(Ordering::SeqCst);
+
+            if jobs_counter_now == idle_state.jobs_counter {
+                self.sleep(idle_state, latch, has_injected_jobs);
+            } else {
+                idle_state.jobs_counter = jobs_counter_now;
+            }
         }
     }
 
