@@ -115,6 +115,8 @@ impl Sleep {
                 self.sleep(idle_state, latch, has_injected_jobs);
             } else {
                 idle_state.jobs_counter = jobs_counter_now;
+                idle_state.last_waited_duration = Duration::from_secs(0);
+                idle_state.waiting_cycles = INITIAL_WAITING_CYCLES;
             }
         }
     }
