@@ -99,6 +99,16 @@ impl Sleep {
         latch: &CoreLatch,
         has_injected_jobs: impl FnOnce() -> bool,
     ) {
+        let jobs_counter_now = self.jobs_counter.load(Ordering::SeqCst);
+
+        if jobs_counter_now != idle_state.jobs_counter {
+            idle_state.jobs_counter = jobs_counter_now;
+            idle_state.last_waited_duration = Duration::from_secs(0);
+            idle_state.waiting_cycles = INITIAL_WAITING_CYCLES;
+
+            return;
+        }
+
         if idle_state.last_waited_duration < *SLEEPING_THRESHOLD {
             let start = Instant::now();
 
@@ -109,15 +119,7 @@ impl Sleep {
             idle_state.last_waited_duration = start.elapsed();
             idle_state.waiting_cycles = idle_state.waiting_cycles * WAITING_TIME_MULTIPLIER;
         } else {
-            let jobs_counter_now = self.jobs_counter.load(Ordering::SeqCst);
-
-            if jobs_counter_now == idle_state.jobs_counter {
-                self.sleep(idle_state, latch, has_injected_jobs);
-            } else {
-                idle_state.jobs_counter = jobs_counter_now;
-                idle_state.last_waited_duration = Duration::from_secs(0);
-                idle_state.waiting_cycles = INITIAL_WAITING_CYCLES;
-            }
+            self.sleep(idle_state, latch, has_injected_jobs);
         }
     }
 
