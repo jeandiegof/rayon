@@ -47,7 +47,6 @@ pub(super) struct IdleState {
 }
 
 const INITIAL_WAITING_CYCLES: u64 = 40;
-const WAITING_TIME_MULTIPLIER: u64 = 2;
 
 lazy_static! {
     static ref SLEEPING_THRESHOLD: Duration = Duration::from_micros(
@@ -56,6 +55,10 @@ lazy_static! {
             .parse()
             .unwrap(),
     );
+    static ref WAITING_TIME_MULTIPLIER: u64 = std::env::var("WAITING_TIME_MULTIPLIER")
+        .unwrap()
+        .parse()
+        .unwrap();
 }
 
 impl Sleep {
@@ -96,7 +99,7 @@ impl Sleep {
             }
 
             idle_state.last_waited_duration = start.elapsed();
-            idle_state.waiting_cycles = idle_state.waiting_cycles * WAITING_TIME_MULTIPLIER;
+            idle_state.waiting_cycles = idle_state.waiting_cycles * *WAITING_TIME_MULTIPLIER;
         } else {
             self.sleep(idle_state, latch, has_injected_jobs);
         }
