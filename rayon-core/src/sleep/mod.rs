@@ -55,7 +55,7 @@ lazy_static! {
             .parse()
             .unwrap(),
     );
-    static ref WAITING_TIME_MULTIPLIER: u64 = std::env::var("WAITING_TIME_MULTIPLIER")
+    static ref WAITING_TIME_MULTIPLIER: f32 = std::env::var("WAITING_TIME_MULTIPLIER")
         .unwrap()
         .parse()
         .unwrap();
@@ -99,7 +99,8 @@ impl Sleep {
             }
 
             idle_state.last_waited_duration = start.elapsed();
-            idle_state.waiting_cycles = idle_state.waiting_cycles * *WAITING_TIME_MULTIPLIER;
+            idle_state.waiting_cycles =
+                (idle_state.waiting_cycles as f32 * *WAITING_TIME_MULTIPLIER) as u64;
         } else {
             self.sleep(idle_state, latch, has_injected_jobs);
         }
