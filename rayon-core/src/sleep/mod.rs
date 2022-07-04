@@ -5,9 +5,9 @@ use crate::latch::CoreLatch;
 use crate::log::Event::*;
 use crate::log::Logger;
 use crossbeam_utils::CachePadded;
+use lazy_static::lazy_static;
 use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex};
-use std::thread;
 use std::usize;
 
 mod counters;
@@ -56,6 +56,10 @@ struct WorkerSleepState {
     is_blocked: Mutex<bool>,
 
     condvar: Condvar,
+}
+
+lazy_static! {
+    static ref BUSY_WAIT_CYCLES: u32 = std::env::var("BUSY_WAIT_CYCLES").unwrap().parse().unwrap();
 }
 
 const ROUNDS_UNTIL_SLEEPY: u32 = 32;
@@ -108,15 +112,21 @@ impl Sleep {
         has_injected_jobs: impl FnOnce() -> bool,
     ) {
         if idle_state.rounds < ROUNDS_UNTIL_SLEEPY {
-            thread::yield_now();
+            for _ in 0..*BUSY_WAIT_CYCLES {
+                unsafe { std::arch::asm!("nop") }
+            }
             idle_state.rounds += 1;
         } else if idle_state.rounds == ROUNDS_UNTIL_SLEEPY {
             idle_state.jobs_counter = self.announce_sleepy(idle_state.worker_index);
             idle_state.rounds += 1;
-            thread::yield_now();
+            for _ in 0..*BUSY_WAIT_CYCLES {
+                unsafe { std::arch::asm!("nop") }
+            }
         } else if idle_state.rounds < ROUNDS_UNTIL_SLEEPING {
             idle_state.rounds += 1;
-            thread::yield_now();
+            for _ in 0..*BUSY_WAIT_CYCLES {
+                unsafe { std::arch::asm!("nop") }
+            }
         } else {
             debug_assert_eq!(idle_state.rounds, ROUNDS_UNTIL_SLEEPING);
             let span = tracing::span!(tracing::Level::TRACE, "sleep");
