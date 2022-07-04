@@ -8,6 +8,7 @@ use crossbeam_utils::CachePadded;
 use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 use std::usize;
 
 mod counters;
@@ -43,6 +44,12 @@ pub(super) struct IdleState {
     /// How many rounds have we been circling without sleeping?
     rounds: u32,
 
+    /// How many cycles will we wait in this round?
+    waiting_cycles: u64,
+
+    /// How long have we waited after the last failed steal attempt?
+    last_waited_duration: Duration,
+
     /// Once we become sleepy, what was the sleepy counter value?
     /// Set to `INVALID_SLEEPY_COUNTER` otherwise.
     jobs_counter: JobsEventCounter,
@@ -60,6 +67,8 @@ struct WorkerSleepState {
 
 const ROUNDS_UNTIL_SLEEPY: u32 = 32;
 const ROUNDS_UNTIL_SLEEPING: u32 = ROUNDS_UNTIL_SLEEPY + 1;
+
+const INITIAL_WAITING_CYCLES: u64 = 1;
 
 impl Sleep {
     pub(super) fn new(logger: Logger, n_threads: usize) -> Sleep {
@@ -83,6 +92,8 @@ impl Sleep {
         IdleState {
             worker_index,
             rounds: 0,
+            waiting_cycles: INITIAL_WAITING_CYCLES,
+            last_waited_duration: Duration::from_secs(0),
             jobs_counter: JobsEventCounter::DUMMY,
         }
     }
@@ -107,16 +118,29 @@ impl Sleep {
         latch: &CoreLatch,
         has_injected_jobs: impl FnOnce() -> bool,
     ) {
+        // TODO: how to integrate our algorithm with minimal changes?
+        // Ideally, I would like to test an initial version that keeps
+        // the sleepy state and all that.
         if idle_state.rounds < ROUNDS_UNTIL_SLEEPY {
-            thread::yield_now();
+            let start = Instant::now();
+            for _ in 0..idle_state.waiting_cycles {
+                unsafe { std::arch::asm!("nop") }
+            }
+
             idle_state.rounds += 1;
         } else if idle_state.rounds == ROUNDS_UNTIL_SLEEPY {
             idle_state.jobs_counter = self.announce_sleepy(idle_state.worker_index);
             idle_state.rounds += 1;
-            thread::yield_now();
+
+            for _ in 0..idle_state.waiting_cycles {
+                unsafe { std::arch::asm!("nop") }
+            }
         } else if idle_state.rounds < ROUNDS_UNTIL_SLEEPING {
             idle_state.rounds += 1;
-            thread::yield_now();
+
+            for _ in 0..idle_state.waiting_cycles {
+                unsafe { std::arch::asm!("nop") }
+            }
         } else {
             debug_assert_eq!(idle_state.rounds, ROUNDS_UNTIL_SLEEPING);
             let span = tracing::span!(tracing::Level::TRACE, "sleep");
