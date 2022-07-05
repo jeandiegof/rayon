@@ -8,6 +8,7 @@ use crossbeam_utils::CachePadded;
 use lazy_static::lazy_static;
 use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 use std::usize;
 
 mod counters;
@@ -40,8 +41,11 @@ pub(super) struct IdleState {
     /// What is worker index of the idle thread?
     worker_index: usize,
 
-    /// How many rounds have we been circling without sleeping?
-    rounds: u32,
+    waiting_cycles: u64,
+
+    last_waited_duration: Duration,
+
+    should_sleep: bool,
 
     /// Once we become sleepy, what was the sleepy counter value?
     /// Set to `INVALID_SLEEPY_COUNTER` otherwise.
@@ -62,8 +66,9 @@ lazy_static! {
     static ref BUSY_WAIT_CYCLES: u32 = std::env::var("BUSY_WAIT_CYCLES").unwrap().parse().unwrap();
 }
 
-const ROUNDS_UNTIL_SLEEPY: u32 = 32;
-const ROUNDS_UNTIL_SLEEPING: u32 = ROUNDS_UNTIL_SLEEPY + 1;
+const INITIAL_WAITING_CYCLES: u64 = 40;
+const WAITING_CYCLES_MULTIPLIER: f64 = 1.25;
+const SLEEPING_THRESHOLD: Duration = Duration::from_micros(500);
 
 impl Sleep {
     pub(super) fn new(logger: Logger, n_threads: usize) -> Sleep {
@@ -86,7 +91,9 @@ impl Sleep {
 
         IdleState {
             worker_index,
-            rounds: 0,
+            waiting_cycles: INITIAL_WAITING_CYCLES,
+            last_waited_duration: Duration::from_secs(0),
+            should_sleep: false,
             jobs_counter: JobsEventCounter::DUMMY,
         }
     }
@@ -95,7 +102,7 @@ impl Sleep {
     pub(super) fn work_found(&self, idle_state: IdleState) {
         self.logger.log(|| ThreadFoundWork {
             worker: idle_state.worker_index,
-            yields: idle_state.rounds,
+            yields: 0,
         });
 
         // If we were the last idle thread and other threads are still sleeping,
@@ -111,24 +118,20 @@ impl Sleep {
         latch: &CoreLatch,
         has_injected_jobs: impl FnOnce() -> bool,
     ) {
-        if idle_state.rounds < ROUNDS_UNTIL_SLEEPY {
-            for _ in 0..*BUSY_WAIT_CYCLES {
+        if idle_state.last_waited_duration <= SLEEPING_THRESHOLD {
+            let start = Instant::now();
+
+            for _ in 0..idle_state.waiting_cycles {
                 unsafe { std::arch::asm!("nop") }
             }
-            idle_state.rounds += 1;
-        } else if idle_state.rounds == ROUNDS_UNTIL_SLEEPY {
+
+            idle_state.last_waited_duration = start.elapsed();
+            idle_state.waiting_cycles =
+                (idle_state.waiting_cycles as f64 * WAITING_CYCLES_MULTIPLIER) as u64;
+        } else if idle_state.should_sleep == false {
             idle_state.jobs_counter = self.announce_sleepy(idle_state.worker_index);
-            idle_state.rounds += 1;
-            for _ in 0..*BUSY_WAIT_CYCLES {
-                unsafe { std::arch::asm!("nop") }
-            }
-        } else if idle_state.rounds < ROUNDS_UNTIL_SLEEPING {
-            idle_state.rounds += 1;
-            for _ in 0..*BUSY_WAIT_CYCLES {
-                unsafe { std::arch::asm!("nop") }
-            }
-        } else {
-            debug_assert_eq!(idle_state.rounds, ROUNDS_UNTIL_SLEEPING);
+            idle_state.should_sleep = true;
+        } else if idle_state.should_sleep == true {
             let span = tracing::span!(tracing::Level::TRACE, "sleep");
             let _guard = span.enter();
             self.sleep(idle_state, latch, has_injected_jobs);
@@ -395,12 +398,12 @@ impl Sleep {
 
 impl IdleState {
     fn wake_fully(&mut self) {
-        self.rounds = 0;
+        self.waiting_cycles = INITIAL_WAITING_CYCLES;
+        self.last_waited_duration = Duration::from_secs(0);
         self.jobs_counter = JobsEventCounter::DUMMY;
     }
 
     fn wake_partly(&mut self) {
-        self.rounds = ROUNDS_UNTIL_SLEEPY;
-        self.jobs_counter = JobsEventCounter::DUMMY;
+        self.wake_fully()
     }
 }
