@@ -5,7 +5,6 @@ use crate::latch::CoreLatch;
 use crate::log::Event::*;
 use crate::log::Logger;
 use crossbeam_utils::CachePadded;
-use lazy_static::lazy_static;
 use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -60,10 +59,6 @@ struct WorkerSleepState {
     is_blocked: Mutex<bool>,
 
     condvar: Condvar,
-}
-
-lazy_static! {
-    static ref BUSY_WAIT_CYCLES: u32 = std::env::var("BUSY_WAIT_CYCLES").unwrap().parse().unwrap();
 }
 
 const INITIAL_WAITING_CYCLES: u64 = 40;
