@@ -208,13 +208,7 @@ impl<'r> Latch for SpinLatch<'r> {
         let target_worker_index = self.target_worker_index;
 
         // NOTE: Once we `set`, the target may proceed and invalidate `&self`!
-        if self.core_latch.set() {
-            // Subtle: at this point, we can no longer read from
-            // `self`, because the thread owning this spin latch may
-            // have awoken and deallocated the latch. Therefore, we
-            // only use fields whose values we already read.
-            registry.notify_worker_latch_is_set(target_worker_index);
-        }
+        self.core_latch.set();
     }
 }
 
@@ -316,9 +310,7 @@ impl CountLatch {
     /// which should be the one that owns this latch.
     #[inline]
     pub(super) fn set_and_tickle_one(&self, registry: &Registry, target_worker_index: usize) {
-        if self.set() {
-            registry.notify_worker_latch_is_set(target_worker_index);
-        }
+        self.set();
     }
 }
 
