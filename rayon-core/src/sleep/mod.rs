@@ -395,10 +395,11 @@ impl IdleState {
     fn wake_fully(&mut self) {
         self.waiting_cycles = INITIAL_WAITING_CYCLES;
         self.last_waited_duration = Duration::from_secs(0);
+        self.should_sleep = false;
         self.jobs_counter = JobsEventCounter::DUMMY;
     }
 
     fn wake_partly(&mut self) {
-        self.wake_fully()
+        self.should_sleep = true;
     }
 }
