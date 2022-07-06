@@ -119,8 +119,6 @@ impl Sleep {
             thread::yield_now();
         } else {
             debug_assert_eq!(idle_state.rounds, ROUNDS_UNTIL_SLEEPING);
-            let span = tracing::span!(tracing::Level::TRACE, "sleep");
-            let _guard = span.enter();
             self.sleep(idle_state, latch, has_injected_jobs);
         }
     }
