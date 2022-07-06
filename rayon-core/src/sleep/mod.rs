@@ -7,6 +7,7 @@ use crate::log::Logger;
 use crossbeam_utils::CachePadded;
 use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 use std::usize;
 
@@ -43,8 +44,6 @@ pub(super) struct IdleState {
     waiting_cycles: u64,
 
     last_waited_duration: Duration,
-
-    should_sleep: bool,
 
     /// Once we become sleepy, what was the sleepy counter value?
     /// Set to `INVALID_SLEEPY_COUNTER` otherwise.
@@ -88,7 +87,6 @@ impl Sleep {
             worker_index,
             waiting_cycles: INITIAL_WAITING_CYCLES,
             last_waited_duration: Duration::from_secs(0),
-            should_sleep: false,
             jobs_counter: JobsEventCounter::DUMMY,
         }
     }
@@ -123,27 +121,11 @@ impl Sleep {
             idle_state.last_waited_duration = start.elapsed();
             idle_state.waiting_cycles =
                 (idle_state.waiting_cycles as f64 * WAITING_CYCLES_MULTIPLIER) as u64;
-        } else if idle_state.should_sleep == false {
-            idle_state.jobs_counter = self.announce_sleepy(idle_state.worker_index);
-            idle_state.should_sleep = true;
-        } else if idle_state.should_sleep == true {
+        } else {
             let span = tracing::span!(tracing::Level::TRACE, "sleep");
             let _guard = span.enter();
             self.sleep(idle_state, latch, has_injected_jobs);
         }
-    }
-
-    #[cold]
-    fn announce_sleepy(&self, worker_index: usize) -> JobsEventCounter {
-        let counters = self
-            .counters
-            .increment_jobs_event_counter_if(JobsEventCounter::is_active);
-        let jobs_counter = counters.jobs_counter();
-        self.logger.log(|| ThreadSleepy {
-            worker: worker_index,
-            jobs_counter: jobs_counter.as_usize(),
-        });
-        jobs_counter
     }
 
     #[cold]
@@ -153,100 +135,7 @@ impl Sleep {
         latch: &CoreLatch,
         has_injected_jobs: impl FnOnce() -> bool,
     ) {
-        let worker_index = idle_state.worker_index;
-
-        if !latch.get_sleepy() {
-            self.logger.log(|| ThreadSleepInterruptedByLatch {
-                worker: worker_index,
-                latch_addr: latch.addr(),
-            });
-
-            return;
-        }
-
-        let sleep_state = &self.worker_sleep_states[worker_index];
-        let mut is_blocked = sleep_state.is_blocked.lock().unwrap();
-        debug_assert!(!*is_blocked);
-
-        // Our latch was signalled. We should wake back up fully as we
-        // wil have some stuff to do.
-        if !latch.fall_asleep() {
-            self.logger.log(|| ThreadSleepInterruptedByLatch {
-                worker: worker_index,
-                latch_addr: latch.addr(),
-            });
-
-            idle_state.wake_fully();
-            return;
-        }
-
-        loop {
-            let counters = self.counters.load(Ordering::SeqCst);
-
-            // Check if the JEC has changed since we got sleepy.
-            debug_assert!(idle_state.jobs_counter.is_sleepy());
-            if counters.jobs_counter() != idle_state.jobs_counter {
-                // JEC has changed, so a new job was posted, but for some reason
-                // we didn't see it. We should return to just before the SLEEPY
-                // state so we can do another search and (if we fail to find
-                // work) go back to sleep.
-                self.logger.log(|| ThreadSleepInterruptedByJob {
-                    worker: worker_index,
-                });
-
-                idle_state.wake_partly();
-                latch.wake_up();
-                return;
-            }
-
-            // Otherwise, let's move from IDLE to SLEEPING.
-            if self.counters.try_add_sleeping_thread(counters) {
-                break;
-            }
-        }
-
-        // Successfully registered as asleep.
-
-        self.logger.log(|| ThreadSleeping {
-            worker: worker_index,
-            latch_addr: latch.addr(),
-        });
-
-        // We have one last check for injected jobs to do. This protects against
-        // deadlock in the very unlikely event that
-        //
-        // - an external job is being injected while we are sleepy
-        // - that job triggers the rollover over the JEC such that we don't see it
-        // - we are the last active worker thread
-        std::sync::atomic::fence(Ordering::SeqCst);
-        if has_injected_jobs() {
-            // If we see an externally injected job, then we have to 'wake
-            // ourselves up'. (Ordinarily, `sub_sleeping_thread` is invoked by
-            // the one that wakes us.)
-            self.counters.sub_sleeping_thread();
-        } else {
-            // If we don't see an injected job (the normal case), then flag
-            // ourselves as asleep and wait till we are notified.
-            //
-            // (Note that `is_blocked` is held under a mutex and the mutex was
-            // acquired *before* we incremented the "sleepy counter". This means
-            // that whomever is coming to wake us will have to wait until we
-            // release the mutex in the call to `wait`, so they will see this
-            // boolean as true.)
-            *is_blocked = true;
-            while *is_blocked {
-                is_blocked = sleep_state.condvar.wait(is_blocked).unwrap();
-            }
-        }
-
-        // Update other state:
-        idle_state.wake_fully();
-        latch.wake_up();
-
-        self.logger.log(|| ThreadAwoken {
-            worker: worker_index,
-            latch_addr: latch.addr(),
-        });
+        thread::sleep(SLEEPING_THRESHOLD)
     }
 
     /// Notify the given thread that it should wake up (if it is
@@ -395,11 +284,8 @@ impl IdleState {
     fn wake_fully(&mut self) {
         self.waiting_cycles = INITIAL_WAITING_CYCLES;
         self.last_waited_duration = Duration::from_secs(0);
-        self.should_sleep = false;
         self.jobs_counter = JobsEventCounter::DUMMY;
     }
 
-    fn wake_partly(&mut self) {
-        self.should_sleep = true;
-    }
+    fn wake_partly(&mut self) {}
 }
