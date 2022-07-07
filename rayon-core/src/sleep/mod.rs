@@ -42,10 +42,9 @@ pub(super) struct IdleState {
 
     /// How many rounds have we been circling without sleeping?
     rounds: u32,
-
-    /// Once we become sleepy, what was the sleepy counter value?
-    /// Set to `INVALID_SLEEPY_COUNTER` otherwise.
-    jobs_counter: JobsEventCounter,
+    // / Once we become sleepy, what was the sleepy counter value?
+    // / Set to `INVALID_SLEEPY_COUNTER` otherwise.
+    // jobs_counter: JobsEventCounter,
 }
 
 /// The "sleep state" for an individual worker.
@@ -83,7 +82,7 @@ impl Sleep {
         IdleState {
             worker_index,
             rounds: 0,
-            jobs_counter: JobsEventCounter::DUMMY,
+            // jobs_counter: JobsEventCounter::DUMMY,
         }
     }
 
@@ -111,7 +110,7 @@ impl Sleep {
             thread::yield_now();
             idle_state.rounds += 1;
         } else if idle_state.rounds == ROUNDS_UNTIL_SLEEPY {
-            idle_state.jobs_counter = self.announce_sleepy(idle_state.worker_index);
+            // idle_state.jobs_counter = self.announce_sleepy(idle_state.worker_index);
             idle_state.rounds += 1;
             thread::yield_now();
         } else if idle_state.rounds < ROUNDS_UNTIL_SLEEPING {
@@ -174,20 +173,20 @@ impl Sleep {
             let counters = self.counters.load(Ordering::SeqCst);
 
             // Check if the JEC has changed since we got sleepy.
-            debug_assert!(idle_state.jobs_counter.is_sleepy());
-            if counters.jobs_counter() != idle_state.jobs_counter {
-                // JEC has changed, so a new job was posted, but for some reason
-                // we didn't see it. We should return to just before the SLEEPY
-                // state so we can do another search and (if we fail to find
-                // work) go back to sleep.
-                self.logger.log(|| ThreadSleepInterruptedByJob {
-                    worker: worker_index,
-                });
+            // debug_assert!(idle_state.jobs_counter.is_sleepy());
+            // if counters.jobs_counter() != idle_state.jobs_counter {
+            //     // JEC has changed, so a new job was posted, but for some reason
+            //     // we didn't see it. We should return to just before the SLEEPY
+            //     // state so we can do another search and (if we fail to find
+            //     // work) go back to sleep.
+            //     self.logger.log(|| ThreadSleepInterruptedByJob {
+            //         worker: worker_index,
+            //     });
 
-                idle_state.wake_partly();
-                latch.wake_up();
-                return;
-            }
+            //     idle_state.wake_partly();
+            //     latch.wake_up();
+            //     return;
+            // }
 
             // Otherwise, let's move from IDLE to SLEEPING.
             if self.counters.try_add_sleeping_thread(counters) {
@@ -305,9 +304,7 @@ impl Sleep {
         // Read the counters and -- if sleepy workers have announced themselves
         // -- announce that there is now work available. The final value of `counters`
         // with which we exit the loop thus corresponds to a state when
-        let counters = self
-            .counters
-            .increment_jobs_event_counter_if(JobsEventCounter::is_sleepy);
+        let counters = self.counters.load(Ordering::SeqCst);
         let num_awake_but_idle = counters.awake_but_idle_threads();
         let num_sleepers = counters.sleeping_threads();
 
@@ -384,11 +381,11 @@ impl Sleep {
 impl IdleState {
     fn wake_fully(&mut self) {
         self.rounds = 0;
-        self.jobs_counter = JobsEventCounter::DUMMY;
+        // self.jobs_counter = JobsEventCounter::DUMMY;
     }
 
-    fn wake_partly(&mut self) {
-        self.rounds = ROUNDS_UNTIL_SLEEPY;
-        self.jobs_counter = JobsEventCounter::DUMMY;
-    }
+    // fn wake_partly(&mut self) {
+    //     self.rounds = ROUNDS_UNTIL_SLEEPY;
+    //     self.jobs_counter = JobsEventCounter::DUMMY;
+    // }
 }
