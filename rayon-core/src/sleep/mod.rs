@@ -304,36 +304,37 @@ impl Sleep {
         // Read the counters and -- if sleepy workers have announced themselves
         // -- announce that there is now work available. The final value of `counters`
         // with which we exit the loop thus corresponds to a state when
-        let counters = self.counters.load(Ordering::SeqCst);
-        let num_awake_but_idle = counters.awake_but_idle_threads();
-        let num_sleepers = counters.sleeping_threads();
+        // let counters = self.counters.load(Ordering::SeqCst);
+        // let num_awake_but_idle = counters.awake_but_idle_threads();
+        // let num_sleepers = counters.sleeping_threads();
 
         self.logger.log(|| JobThreadCounts {
             worker: source_worker_index,
-            num_idle: num_awake_but_idle as u16,
-            num_sleepers: num_sleepers as u16,
+            num_idle: 0 as u16,
+            num_sleepers: 0 as u16,
         });
 
-        if num_sleepers == 0 {
-            // nobody to wake
-            return;
-        }
+        // if num_sleepers == 0 {
+        //     // nobody to wake
+        //     return;
+        // }
 
         // Promote from u16 to u32 so we can interoperate with
         // num_jobs more easily.
-        let num_awake_but_idle = num_awake_but_idle as u32;
-        let num_sleepers = num_sleepers as u32;
+        // let num_awake_but_idle = num_awake_but_idle as u32;
+        // let num_sleepers = num_sleepers as u32;
 
         // If the queue is non-empty, then we always wake up a worker
         // -- clearly the existing idle jobs aren't enough. Otherwise,
         // check to see if we have enough idle workers.
-        if !queue_was_empty {
-            let num_to_wake = std::cmp::min(num_jobs, num_sleepers);
-            self.wake_any_threads(num_to_wake);
-        } else if num_awake_but_idle < num_jobs {
-            let num_to_wake = std::cmp::min(num_jobs - num_awake_but_idle, num_sleepers);
-            self.wake_any_threads(num_to_wake);
-        }
+        // if !queue_was_empty {
+        //     let num_to_wake = std::cmp::min(num_jobs, num_sleepers);
+        //     self.wake_any_threads(num_to_wake);
+        // } else if num_awake_but_idle < num_jobs {
+        //     let num_to_wake = std::cmp::min(num_jobs - num_awake_but_idle, num_sleepers);
+        //     self.wake_any_threads(num_to_wake);
+        // }
+        self.wake_any_threads(num_jobs);
     }
 
     #[cold]
