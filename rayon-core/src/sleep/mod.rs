@@ -42,10 +42,6 @@ pub(super) struct IdleState {
 
     /// How many rounds have we been circling without sleeping?
     rounds: u32,
-
-    /// Once we become sleepy, what was the sleepy counter value?
-    /// Set to `INVALID_SLEEPY_COUNTER` otherwise.
-    jobs_counter: JobsEventCounter,
 }
 
 /// The "sleep state" for an individual worker.
@@ -83,7 +79,6 @@ impl Sleep {
         IdleState {
             worker_index,
             rounds: 0,
-            jobs_counter: JobsEventCounter::DUMMY,
         }
     }
 
@@ -107,16 +102,9 @@ impl Sleep {
         latch: &CoreLatch,
         has_injected_jobs: impl FnOnce() -> bool,
     ) {
-        if idle_state.rounds < ROUNDS_UNTIL_SLEEPY {
+        if idle_state.rounds < ROUNDS_UNTIL_SLEEPING {
             thread::yield_now();
             idle_state.rounds += 1;
-        } else if idle_state.rounds == ROUNDS_UNTIL_SLEEPY {
-            idle_state.jobs_counter = self.announce_sleepy(idle_state.worker_index);
-            idle_state.rounds += 1;
-            thread::yield_now();
-        } else if idle_state.rounds < ROUNDS_UNTIL_SLEEPING {
-            idle_state.rounds += 1;
-            thread::yield_now();
         } else {
             debug_assert_eq!(idle_state.rounds, ROUNDS_UNTIL_SLEEPING);
             self.sleep(idle_state, latch, has_injected_jobs);
@@ -172,22 +160,6 @@ impl Sleep {
 
         loop {
             let counters = self.counters.load(Ordering::SeqCst);
-
-            // Check if the JEC has changed since we got sleepy.
-            debug_assert!(idle_state.jobs_counter.is_sleepy());
-            if counters.jobs_counter() != idle_state.jobs_counter {
-                // JEC has changed, so a new job was posted, but for some reason
-                // we didn't see it. We should return to just before the SLEEPY
-                // state so we can do another search and (if we fail to find
-                // work) go back to sleep.
-                self.logger.log(|| ThreadSleepInterruptedByJob {
-                    worker: worker_index,
-                });
-
-                idle_state.wake_partly();
-                latch.wake_up();
-                return;
-            }
 
             // Otherwise, let's move from IDLE to SLEEPING.
             if self.counters.try_add_sleeping_thread(counters) {
@@ -302,41 +274,14 @@ impl Sleep {
     /// Common helper for `new_injected_jobs` and `new_internal_jobs`.
     #[inline]
     fn new_jobs(&self, source_worker_index: usize, num_jobs: u32, queue_was_empty: bool) {
-        // Read the counters and -- if sleepy workers have announced themselves
-        // -- announce that there is now work available. The final value of `counters`
-        // with which we exit the loop thus corresponds to a state when
-        let counters = self
-            .counters
-            .increment_jobs_event_counter_if(JobsEventCounter::is_sleepy);
-        let num_awake_but_idle = counters.awake_but_idle_threads();
-        let num_sleepers = counters.sleeping_threads();
-
+        // keeping the log here just to avoid performance changes due to that
         self.logger.log(|| JobThreadCounts {
             worker: source_worker_index,
-            num_idle: num_awake_but_idle as u16,
-            num_sleepers: num_sleepers as u16,
+            num_idle: 0,
+            num_sleepers: 0,
         });
 
-        if num_sleepers == 0 {
-            // nobody to wake
-            return;
-        }
-
-        // Promote from u16 to u32 so we can interoperate with
-        // num_jobs more easily.
-        let num_awake_but_idle = num_awake_but_idle as u32;
-        let num_sleepers = num_sleepers as u32;
-
-        // If the queue is non-empty, then we always wake up a worker
-        // -- clearly the existing idle jobs aren't enough. Otherwise,
-        // check to see if we have enough idle workers.
-        if !queue_was_empty {
-            let num_to_wake = std::cmp::min(num_jobs, num_sleepers);
-            self.wake_any_threads(num_to_wake);
-        } else if num_awake_but_idle < num_jobs {
-            let num_to_wake = std::cmp::min(num_jobs - num_awake_but_idle, num_sleepers);
-            self.wake_any_threads(num_to_wake);
-        }
+        self.wake_any_threads(num_jobs);
     }
 
     #[cold]
@@ -384,11 +329,5 @@ impl Sleep {
 impl IdleState {
     fn wake_fully(&mut self) {
         self.rounds = 0;
-        self.jobs_counter = JobsEventCounter::DUMMY;
-    }
-
-    fn wake_partly(&mut self) {
-        self.rounds = ROUNDS_UNTIL_SLEEPY;
-        self.jobs_counter = JobsEventCounter::DUMMY;
     }
 }
