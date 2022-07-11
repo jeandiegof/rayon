@@ -17,13 +17,6 @@ pub(super) struct AtomicCounters {
     jobs_event_counter: AtomicUsize,
 }
 
-#[derive(Copy, Clone)]
-pub(super) struct Counters {
-    sleeping_threads: usize,
-    inactive_threads: usize,
-    jobs_event_counter: usize,
-}
-
 /// A value read from the **Jobs Event Counter**.
 /// See the [`README.md`](README.md) for more
 /// coverage of how the jobs event counter works.
@@ -63,30 +56,8 @@ const THREADS_BITS: usize = 16;
 #[cfg(target_pointer_width = "32")]
 const THREADS_BITS: usize = 8;
 
-/// Bits to shift to select the sleeping threads
-/// (used with `select_bits`).
-const SLEEPING_SHIFT: usize = 0 * THREADS_BITS;
-
-/// Bits to shift to select the inactive threads
-/// (used with `select_bits`).
-const INACTIVE_SHIFT: usize = 1 * THREADS_BITS;
-
-/// Bits to shift to select the JEC
-/// (use JOBS_BITS).
-const JEC_SHIFT: usize = 2 * THREADS_BITS;
-
 /// Max value for the thread counters.
 pub(crate) const THREADS_MAX: usize = (1 << THREADS_BITS) - 1;
-
-/// Constant that can be added to add one sleeping thread.
-const ONE_SLEEPING: usize = 1;
-
-/// Constant that can be added to add one inactive thread.
-/// An inactive thread is either idle, sleepy, or sleeping.
-const ONE_INACTIVE: usize = 1 << INACTIVE_SHIFT;
-
-/// Constant that can be added to add one to the JEC.
-const ONE_JEC: usize = 1 << JEC_SHIFT;
 
 impl AtomicCounters {
     #[inline]
@@ -130,23 +101,6 @@ impl AtomicCounters {
             .compare_exchange(
                 old_value.sleeping_threads,
                 new_value.sleeping_threads,
-                ordering,
-                Ordering::Relaxed,
-            )
-            .is_ok()
-    }
-
-    #[inline]
-    fn try_exchange_inactive(
-        &self,
-        old_value: InactiveThreadsCounter,
-        new_value: InactiveThreadsCounter,
-        ordering: Ordering,
-    ) -> bool {
-        self.inactive_threads
-            .compare_exchange(
-                old_value.inactive_threads,
-                new_value.inactive_threads,
                 ordering,
                 Ordering::Relaxed,
             )
@@ -232,79 +186,6 @@ impl AtomicCounters {
         new_value.sleeping_threads += 1;
 
         self.try_exchange_sleeping_threads(old_value, new_value, Ordering::SeqCst)
-    }
-}
-
-#[inline]
-fn select_thread(word: usize, shift: usize) -> usize {
-    ((word >> shift) as usize) & THREADS_MAX
-}
-
-#[inline]
-fn select_jec(word: usize) -> usize {
-    (word >> JEC_SHIFT) as usize
-}
-
-impl Counters {
-    #[inline]
-    fn new(
-        sleeping_threads: usize,
-        inactive_threads: usize,
-        jobs_event_counter: usize,
-    ) -> Counters {
-        Counters {
-            sleeping_threads,
-            inactive_threads,
-            jobs_event_counter,
-        }
-    }
-
-    #[inline]
-    fn increment_jobs_counter(self) -> Counters {
-        // We can freely add to JEC because it occupies the most significant bits.
-        // Thus it doesn't overflow into the other counters, just wraps itself.
-        Counters {
-            jobs_event_counter: self.jobs_event_counter.wrapping_add(1),
-            ..self
-        }
-    }
-
-    #[inline]
-    pub(super) fn jobs_counter(self) -> JobsEventCounter {
-        JobsEventCounter(self.jobs_event_counter)
-    }
-
-    /// The number of threads that are not actively
-    /// executing work. They may be idle, sleepy, or asleep.
-    #[inline]
-    pub(super) fn inactive_threads(self) -> usize {
-        self.inactive_threads
-    }
-
-    #[inline]
-    pub(super) fn awake_but_idle_threads(self) -> usize {
-        debug_assert!(
-            self.sleeping_threads() <= self.inactive_threads(),
-            "sleeping threads: {} > raw idle threads {}",
-            self.sleeping_threads(),
-            self.inactive_threads()
-        );
-        self.inactive_threads() - self.sleeping_threads()
-    }
-
-    #[inline]
-    pub(super) fn sleeping_threads(self) -> usize {
-        self.sleeping_threads
-    }
-}
-
-impl std::fmt::Debug for Counters {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt.debug_struct("Counters")
-            .field("jobs", &self.jobs_counter().0)
-            .field("inactive", &self.inactive_threads())
-            .field("sleeping", &self.sleeping_threads())
-            .finish()
     }
 }
 
