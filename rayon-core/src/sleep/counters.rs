@@ -12,12 +12,16 @@ pub(super) struct AtomicCounters {
     /// This uses 10 bits ([`THREADS_BITS`]) to encode the number of threads. Note
     /// that the total number of bits (and hence the number of bits used for the
     /// JEC) will depend on whether we are using a 32- or 64-bit architecture.
-    value: AtomicUsize,
+    sleeping_threads: AtomicUsize,
+    inactive_threads: AtomicUsize,
+    jobs_event_counter: AtomicUsize,
 }
 
 #[derive(Copy, Clone)]
 pub(super) struct Counters {
-    word: usize,
+    sleeping_threads: usize,
+    inactive_threads: usize,
+    jobs_event_counter: usize,
 }
 
 /// A value read from the **Jobs Event Counter**.
@@ -88,25 +92,80 @@ impl AtomicCounters {
     #[inline]
     pub(super) fn new() -> AtomicCounters {
         AtomicCounters {
-            value: AtomicUsize::new(0),
+            sleeping_threads: AtomicUsize::new(0),
+            inactive_threads: AtomicUsize::new(0),
+            jobs_event_counter: AtomicUsize::new(0),
         }
     }
 
-    /// Load and return the current value of the various counters.
-    /// This value can then be given to other method which will
-    /// attempt to update the counters via compare-and-swap.
     #[inline]
-    pub(super) fn load(&self, ordering: Ordering) -> Counters {
-        Counters::new(self.value.load(ordering))
+    pub(super) fn load_sleeping_threads_counter(
+        &self,
+        ordering: Ordering,
+    ) -> SleepingThreadsCounter {
+        SleepingThreadsCounter::new(self.sleeping_threads.load(ordering))
     }
 
     #[inline]
-    fn try_exchange(&self, old_value: Counters, new_value: Counters, ordering: Ordering) -> bool {
-        self.value
-            .compare_exchange(old_value.word, new_value.word, ordering, Ordering::Relaxed)
+    fn load_inactive_threads_counter(&self, ordering: Ordering) -> InactiveThreadsCounter {
+        InactiveThreadsCounter::new(self.inactive_threads.load(ordering))
+    }
+
+    #[inline]
+    fn load_jobs_event_counter(&self, ordering: Ordering) -> JobEventsCounter {
+        JobEventsCounter::new(self.jobs_event_counter.load(ordering))
+    }
+
+    #[inline]
+    fn try_exchange_sleeping_threads(
+        &self,
+        old_value: SleepingThreadsCounter,
+        new_value: SleepingThreadsCounter,
+        ordering: Ordering,
+    ) -> bool {
+        self.sleeping_threads
+            .compare_exchange(
+                old_value.sleeping_threads,
+                new_value.sleeping_threads,
+                ordering,
+                Ordering::Relaxed,
+            )
             .is_ok()
     }
 
+    #[inline]
+    fn try_exchange_inactive(
+        &self,
+        old_value: InactiveThreadsCounter,
+        new_value: InactiveThreadsCounter,
+        ordering: Ordering,
+    ) -> bool {
+        self.inactive_threads
+            .compare_exchange(
+                old_value.inactive_threads,
+                new_value.inactive_threads,
+                ordering,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+    }
+
+    #[inline]
+    fn try_exchange_jec(
+        &self,
+        old_value: JobEventsCounter,
+        new_value: JobEventsCounter,
+        ordering: Ordering,
+    ) -> bool {
+        self.jobs_event_counter
+            .compare_exchange(
+                old_value.job_events_counter,
+                new_value.job_events_counter,
+                ordering,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+    }
     /// Adds an inactive thread. This cannot fail.
     ///
     /// This should be invoked when a thread enters its idle loop looking
@@ -116,7 +175,7 @@ impl AtomicCounters {
     /// to the number of sleeping threads.
     #[inline]
     pub(super) fn add_inactive_thread(&self) {
-        self.value.fetch_add(ONE_INACTIVE, Ordering::SeqCst);
+        self.inactive_threads.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Increments the jobs event counter if `increment_when`, when applied to
@@ -126,12 +185,12 @@ impl AtomicCounters {
     pub(super) fn increment_jobs_event_counter_if(
         &self,
         increment_when: impl Fn(JobsEventCounter) -> bool,
-    ) -> Counters {
+    ) -> JobEventsCounter {
         loop {
-            let old_value = self.load(Ordering::SeqCst);
+            let old_value = self.load_jobs_event_counter(Ordering::SeqCst);
             if increment_when(old_value.jobs_counter()) {
                 let new_value = old_value.increment_jobs_counter();
-                if self.try_exchange(old_value, new_value, Ordering::SeqCst) {
+                if self.try_exchange_jec(old_value, new_value, Ordering::SeqCst) {
                     return new_value;
                 }
             } else {
@@ -147,23 +206,11 @@ impl AtomicCounters {
     /// See `add_inactive_thread`.
     #[inline]
     pub(super) fn sub_inactive_thread(&self) -> usize {
-        let old_value = Counters::new(self.value.fetch_sub(ONE_INACTIVE, Ordering::SeqCst));
-        debug_assert!(
-            old_value.inactive_threads() > 0,
-            "sub_inactive_thread: old_value {:?} has no inactive threads",
-            old_value,
-        );
-        debug_assert!(
-            old_value.sleeping_threads() <= old_value.inactive_threads(),
-            "sub_inactive_thread: old_value {:?} had {} sleeping threads and {} inactive threads",
-            old_value,
-            old_value.sleeping_threads(),
-            old_value.inactive_threads(),
-        );
+        self.inactive_threads.fetch_sub(1, Ordering::SeqCst);
+        let sleeping_threads = self.sleeping_threads.load(Ordering::SeqCst);
 
         // Current heuristic: whenever an inactive thread goes away, if
         // there are any sleeping threads, wake 'em up.
-        let sleeping_threads = old_value.sleeping_threads();
         std::cmp::min(sleeping_threads, 2)
     }
 
@@ -173,38 +220,15 @@ impl AtomicCounters {
     /// thread).
     #[inline]
     pub(super) fn sub_sleeping_thread(&self) {
-        let old_value = Counters::new(self.value.fetch_sub(ONE_SLEEPING, Ordering::SeqCst));
-        debug_assert!(
-            old_value.sleeping_threads() > 0,
-            "sub_sleeping_thread: old_value {:?} had no sleeping threads",
-            old_value,
-        );
-        debug_assert!(
-            old_value.sleeping_threads() <= old_value.inactive_threads(),
-            "sub_sleeping_thread: old_value {:?} had {} sleeping threads and {} inactive threads",
-            old_value,
-            old_value.sleeping_threads(),
-            old_value.inactive_threads(),
-        );
+        self.sleeping_threads.fetch_sub(1, Ordering::SeqCst);
     }
 
     #[inline]
-    pub(super) fn try_add_sleeping_thread(&self, old_value: Counters) -> bool {
-        debug_assert!(
-            old_value.inactive_threads() > 0,
-            "try_add_sleeping_thread: old_value {:?} has no inactive threads",
-            old_value,
-        );
-        debug_assert!(
-            old_value.sleeping_threads() < THREADS_MAX,
-            "try_add_sleeping_thread: old_value {:?} has too many sleeping threads",
-            old_value,
-        );
-
+    pub(super) fn try_add_sleeping_thread(&self, old_value: SleepingThreadsCounter) -> bool {
         let mut new_value = old_value;
-        new_value.word += ONE_SLEEPING;
+        new_value.sleeping_threads += 1;
 
-        self.try_exchange(old_value, new_value, Ordering::SeqCst)
+        self.try_exchange_sleeping_threads(old_value, new_value, Ordering::SeqCst)
     }
 }
 
@@ -220,8 +244,16 @@ fn select_jec(word: usize) -> usize {
 
 impl Counters {
     #[inline]
-    fn new(word: usize) -> Counters {
-        Counters { word }
+    fn new(
+        sleeping_threads: usize,
+        inactive_threads: usize,
+        jobs_event_counter: usize,
+    ) -> Counters {
+        Counters {
+            sleeping_threads,
+            inactive_threads,
+            jobs_event_counter,
+        }
     }
 
     #[inline]
@@ -229,20 +261,21 @@ impl Counters {
         // We can freely add to JEC because it occupies the most significant bits.
         // Thus it doesn't overflow into the other counters, just wraps itself.
         Counters {
-            word: self.word.wrapping_add(ONE_JEC),
+            jobs_event_counter: self.jobs_event_counter.wrapping_add(1),
+            ..self
         }
     }
 
     #[inline]
     pub(super) fn jobs_counter(self) -> JobsEventCounter {
-        JobsEventCounter(select_jec(self.word))
+        JobsEventCounter(self.jobs_event_counter)
     }
 
     /// The number of threads that are not actively
     /// executing work. They may be idle, sleepy, or asleep.
     #[inline]
     pub(super) fn inactive_threads(self) -> usize {
-        select_thread(self.word, INACTIVE_SHIFT)
+        self.inactive_threads
     }
 
     #[inline]
@@ -258,18 +291,72 @@ impl Counters {
 
     #[inline]
     pub(super) fn sleeping_threads(self) -> usize {
-        select_thread(self.word, SLEEPING_SHIFT)
+        self.sleeping_threads
     }
 }
 
 impl std::fmt::Debug for Counters {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let word = format!("{:016x}", self.word);
         fmt.debug_struct("Counters")
-            .field("word", &word)
             .field("jobs", &self.jobs_counter().0)
             .field("inactive", &self.inactive_threads())
             .field("sleeping", &self.sleeping_threads())
             .finish()
+    }
+}
+
+struct SleepingThreadsCounter {
+    sleeping_threads: usize,
+}
+
+impl SleepingThreadsCounter {
+    #[inline]
+    fn new(sleeping_threads: usize) -> Self {
+        Self { sleeping_threads }
+    }
+
+    #[inline]
+    pub(super) fn sleeping_threads(self) -> usize {
+        self.sleeping_threads
+    }
+}
+
+struct InactiveThreadsCounter {
+    inactive_threads: usize,
+}
+
+impl InactiveThreadsCounter {
+    #[inline]
+    fn new(inactive_threads: usize) -> Self {
+        Self { inactive_threads }
+    }
+
+    #[inline]
+    pub(super) fn inactive_threads(self) -> usize {
+        self.inactive_threads
+    }
+}
+
+struct JobEventsCounter {
+    job_events_counter: usize,
+}
+
+impl JobEventsCounter {
+    #[inline]
+    fn new(job_events_counter: usize) -> Self {
+        Self { job_events_counter }
+    }
+
+    #[inline]
+    fn increment_jobs_counter(self) -> Self {
+        Self {
+            job_events_counter: self.job_events_counter.wrapping_add(1),
+            ..self
+        }
+    }
+
+    #[inline]
+    pub(super) fn jobs_counter(self) -> JobsEventCounter {
+        JobsEventCounter(self.job_events_counter)
     }
 }
