@@ -171,7 +171,7 @@ impl Sleep {
         }
 
         loop {
-            let counters = self.counters.load(Ordering::SeqCst);
+            let counters = self.counters.load_jobs_event_counter(Ordering::SeqCst);
 
             // Check if the JEC has changed since we got sleepy.
             debug_assert!(idle_state.jobs_counter.is_sleepy());
@@ -190,7 +190,14 @@ impl Sleep {
             }
 
             // Otherwise, let's move from IDLE to SLEEPING.
-            if self.counters.try_add_sleeping_thread(counters) {
+            // TODO: we can probably replace all the try_exchange by single operations (fetch_add, fetch_sub)
+            let sleeping_threads_counter = self
+                .counters
+                .load_sleeping_threads_counter(Ordering::SeqCst);
+            if self
+                .counters
+                .try_add_sleeping_thread(sleeping_threads_counter)
+            {
                 break;
             }
         }
@@ -305,11 +312,20 @@ impl Sleep {
         // Read the counters and -- if sleepy workers have announced themselves
         // -- announce that there is now work available. The final value of `counters`
         // with which we exit the loop thus corresponds to a state when
-        let counters = self
-            .counters
+        self.counters
             .increment_jobs_event_counter_if(JobsEventCounter::is_sleepy);
-        let num_awake_but_idle = counters.awake_but_idle_threads();
-        let num_sleepers = counters.sleeping_threads();
+
+        let inactive_threads = self
+            .counters
+            .load_inactive_threads_counter(Ordering::SeqCst);
+
+        let sleeping_threads = self
+            .counters
+            .load_sleeping_threads_counter(Ordering::SeqCst)
+            .sleeping_threads();
+
+        let num_awake_but_idle = inactive_threads.inactive_threads() - sleeping_threads;
+        let num_sleepers = sleeping_threads;
 
         self.logger.log(|| JobThreadCounts {
             worker: source_worker_index,

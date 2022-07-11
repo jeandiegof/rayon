@@ -107,12 +107,15 @@ impl AtomicCounters {
     }
 
     #[inline]
-    fn load_inactive_threads_counter(&self, ordering: Ordering) -> InactiveThreadsCounter {
+    pub(super) fn load_inactive_threads_counter(
+        &self,
+        ordering: Ordering,
+    ) -> InactiveThreadsCounter {
         InactiveThreadsCounter::new(self.inactive_threads.load(ordering))
     }
 
     #[inline]
-    fn load_jobs_event_counter(&self, ordering: Ordering) -> JobEventsCounter {
+    pub(super) fn load_jobs_event_counter(&self, ordering: Ordering) -> JobEventsCounter {
         JobEventsCounter::new(self.jobs_event_counter.load(ordering))
     }
 
@@ -305,7 +308,8 @@ impl std::fmt::Debug for Counters {
     }
 }
 
-struct SleepingThreadsCounter {
+#[derive(Copy, Clone)]
+pub(super) struct SleepingThreadsCounter {
     sleeping_threads: usize,
 }
 
@@ -321,7 +325,8 @@ impl SleepingThreadsCounter {
     }
 }
 
-struct InactiveThreadsCounter {
+#[derive(Copy, Clone)]
+pub(super) struct InactiveThreadsCounter {
     inactive_threads: usize,
 }
 
@@ -337,7 +342,8 @@ impl InactiveThreadsCounter {
     }
 }
 
-struct JobEventsCounter {
+#[derive(Copy, Clone)]
+pub(super) struct JobEventsCounter {
     job_events_counter: usize,
 }
 
