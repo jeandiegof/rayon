@@ -272,21 +272,14 @@ impl Sleep {
     /// Common helper for `new_injected_jobs` and `new_internal_jobs`.
     #[inline]
     fn new_jobs(&self, source_worker_index: usize, num_jobs: u32, queue_was_empty: bool) {
-        let inactive_threads = self
-            .counters
-            .load_inactive_threads_counter(Ordering::SeqCst);
-
-        let sleeping_threads = self
+        let num_sleepers = self
             .counters
             .load_sleeping_threads_counter(Ordering::SeqCst)
             .sleeping_threads();
 
-        let num_awake_but_idle = inactive_threads.inactive_threads() - sleeping_threads;
-        let num_sleepers = sleeping_threads;
-
         self.logger.log(|| JobThreadCounts {
             worker: source_worker_index,
-            num_idle: num_awake_but_idle as u16,
+            num_idle: 0 as u16,
             num_sleepers: num_sleepers as u16,
         });
 
@@ -297,19 +290,13 @@ impl Sleep {
 
         // Promote from u16 to u32 so we can interoperate with
         // num_jobs more easily.
-        let num_awake_but_idle = num_awake_but_idle as u32;
         let num_sleepers = num_sleepers as u32;
 
         // If the queue is non-empty, then we always wake up a worker
         // -- clearly the existing idle jobs aren't enough. Otherwise,
         // check to see if we have enough idle workers.
-        if !queue_was_empty {
-            let num_to_wake = std::cmp::min(num_jobs, num_sleepers);
-            self.wake_any_threads(num_to_wake);
-        } else if num_awake_but_idle < num_jobs {
-            let num_to_wake = std::cmp::min(num_jobs - num_awake_but_idle, num_sleepers);
-            self.wake_any_threads(num_to_wake);
-        }
+        let num_to_wake = std::cmp::min(num_jobs, num_sleepers);
+        self.wake_any_threads(num_to_wake);
     }
 
     #[cold]
