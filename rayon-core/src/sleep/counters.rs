@@ -1,3 +1,4 @@
+use crossbeam_utils::CachePadded;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(super) struct AtomicCounters {
@@ -12,9 +13,9 @@ pub(super) struct AtomicCounters {
     /// This uses 10 bits ([`THREADS_BITS`]) to encode the number of threads. Note
     /// that the total number of bits (and hence the number of bits used for the
     /// JEC) will depend on whether we are using a 32- or 64-bit architecture.
-    sleeping_threads: AtomicUsize,
-    inactive_threads: AtomicUsize,
-    jobs_event_counter: AtomicUsize,
+    sleeping_threads: CachePadded<AtomicUsize>,
+    inactive_threads: CachePadded<AtomicUsize>,
+    jobs_event_counter: CachePadded<AtomicUsize>,
 }
 
 /// A value read from the **Jobs Event Counter**.
@@ -63,9 +64,9 @@ impl AtomicCounters {
     #[inline]
     pub(super) fn new() -> AtomicCounters {
         AtomicCounters {
-            sleeping_threads: AtomicUsize::new(0),
-            inactive_threads: AtomicUsize::new(0),
-            jobs_event_counter: AtomicUsize::new(0),
+            sleeping_threads: CachePadded::new(AtomicUsize::new(0)),
+            inactive_threads: CachePadded::new(AtomicUsize::new(0)),
+            jobs_event_counter: CachePadded::new(AtomicUsize::new(0)),
         }
     }
 
