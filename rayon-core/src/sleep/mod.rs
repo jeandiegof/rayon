@@ -102,8 +102,6 @@ impl Sleep {
             idle_state.waiting_cycles =
                 (idle_state.waiting_cycles as f32 * *WAITING_TIME_MULTIPLIER) as u64;
         } else {
-            let span = tracing::span!(tracing::Level::TRACE, "sleep");
-            let _guard = span.enter();
             self.sleep(idle_state, latch, has_injected_jobs);
         }
     }
